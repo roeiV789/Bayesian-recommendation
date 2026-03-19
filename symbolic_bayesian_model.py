@@ -57,7 +57,7 @@ class BayesianAssistant:
     def predict_choice_probs(self, raw_flight_data):
         #for each flight, the probability P(i) is calculated as: P(i) = exp(utility_i) / sum_j exp(utility_j)
         #we use softmax because it converts the utilities into a probability distribution, scales the utilities that highlights the relative differences, and we can calculate it in a numerically stable way
-        normalized_flights = self.normalize_flight_data(raw_flight_data)
+        normalized_flights = self.preprocess_flights(raw_flight_data)
         utilities = self.compute_utility_function(normalized_flights)
         #we calculate the probability using the softmax function
         #we use the shifted softmax trick in order to deal with underflow, as we may have negative utilities with large magnitudes -> underflow to zero
@@ -89,3 +89,12 @@ class BayesianAssistant:
     def reset_belief_state(self):
         """Resets the engine for a new simulated traveler."""
         self.belief_state = self.prior.copy()
+    def preprocess_flights(self, raw_flight_data):
+        """Converts raw departure time into the cyclical time penalty before normalizing."""
+        processed_data = []
+        for flight in raw_flight_data:
+            price, dep_time, duration, stops = flight
+            time_pen = self.get_time_penalty(dep_time)
+            processed_data.append([price, time_pen, duration, stops])
+        
+        return self.normalize_flight_data(processed_data)

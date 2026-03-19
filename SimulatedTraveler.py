@@ -1,5 +1,5 @@
 import numpy as np
-
+from symbolic_bayesian_model import BayesianAssistant
 
 class SimulatedTraveler:
     def __init__(self, target_weights, assistant_ref, noise_temp=0.15):
