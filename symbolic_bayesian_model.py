@@ -52,7 +52,7 @@ class BayesianAssistant:
     def compute_utility_function(self, normalized_flights):
             
         #calculate the utility of each flight for each user
-        return -np.dot(self.user_profiles, normalized_flights.T)
+        return np.dot(self.user_profiles, normalized_flights.T)
         
     def predict_choice_probs(self, raw_flight_data):
         #for each flight, the probability P(i) is calculated as: P(i) = exp(utility_i) / sum_j exp(utility_j)

@@ -3,6 +3,15 @@ import random
 import numpy as np      
 
 def generate_random_flight_batch(n=4):
+    """
+    Generates a batch of random flight data.
+    parameters:
+    n: the number of flights to generate, default is 4
+    returns:
+    flights: a list of n flights, where each flight is represented as a list of features [price, departure_time, duration, stops]
+
+    
+    """
     #generate n flights with random features. simulates the generation of one of the synthetic flight sets the user will be choosing from.
     flights = []
     #as close as we can to flight data from tel aviv
@@ -23,4 +32,88 @@ def generate_random_flight_batch(n=4):
         stops = random.choice([0, 1, 2], p = [0.4, 0.5, 0.1])
         flights.append([price, time, duration, stops])
     return flights
+
+def generate_reasoning(processed_data, choice_idx, prior_weights, posterior_weights, prior_belief, posterior_belief, features, user_profiles, belief_noise_threshold=0.005, weight_noise_threshold=0.05):
+    """
+    Generates a synthetic Chain-of-Thought reasoning string. 
+    parameters: 
+    processed_data: the normalized flight data that the user chose from, shape is [4,4] (4 flights, 4 features) 
+    choice_idx: the index of the flight that the user chose, an integer from 0 
+    prior_weights: the expected weights for each feature before the user made their choice, shape is [4] (4 features) 
+    posterior_weights: the expected weights for each feature after the user made their choice, shape is [4] (4 features) 
+    features: the list of feature names, in the same order as the weights and the processed data, shape is [4] (4 features) 
+    user_profiles: the matrix of user profiles, shape is [625, 4] (625 profiles, 4 features) 
+    noise_threshold: the threshold for determining significant weight changes, default is 0.05
+    returns: 
+    reasoning: a string that explains the user's choice from a bayesian perspective
+    """
+
+    reasoning_parts = []
+
+    #what was the observation? what was the user's choice?
+    reasoning_parts.append(f"The user selected Flight {choice_idx} from the available options.")
+
+    #how can we interpret this observation in terms of the user's preferences?
+    reasoning_parts.append(
+        "Each possible preference profile assigns a probability to this choice based on how well the flight's features align with its preferences."
+    )
+
+    #we calculate the belief shift - the change in probability for each user profile before and after observing the choice.
+    #positive value - the choice made the profile more likely, negative value - the choice made the profile less likely
+    #the belief starts with a uniform distribution
+    belief_shift = posterior_belief - prior_belief
+
+    # the update can be noisy, so we focus on significant shifts. we can tune the noise threshold.
+    significant_indices = np.where(np.abs(belief_shift) > belief_noise_threshold)[0]
+
+    if len(significant_indices) > 0:
+        reasoning_parts.append(
+            "Profiles that assigned higher likelihood to the chosen flight increased in probability, while others decreased."
+        )
+
+        #what is the direction of the shift? we average the shifts of the significant profiles, by using the weights of the profiles that were the most changed by this choice
+        avg_shift = np.average(user_profiles[significant_indices], axis=0, weights=np.abs(belief_shift[significant_indices]))
+
+        feature_effects = [] #we use the values of avg_shift to determine how the users preference changed for each feature.
+        for i, feature in enumerate(features):
+            if abs(avg_shift[i]) > 0.1: #for significant changes
+                direction = "prefer lower" if avg_shift[i] < 0 else "prefer higher" #lower values are represented by negative weights, higher values by positive weights, so the sign determines the preference
+                feature_effects.append(f"{feature} ({direction} values)") #for example: "price (prefer lower values)"
+
+        if feature_effects: 
+            #we convert the list into a string that explains the change in preferences for the features, and we add it to the reasoning
+            reasoning_parts.append(
+                "As a result, the belief shifts toward profiles that " +
+                ", ".join(feature_effects) + "."
+            )
+    else:
+        #we must provide an explanation also for the case where there are no significant shifts in the belief, in order to teach the model to recognize this case.
+        reasoning_parts.append(
+            "Most preference profiles already assigned similar probabilities to this choice, so the observation does not strongly distinguish between them."
+        )
+        reasoning_parts.append(
+            "As a result, the posterior remains similar to the prior, reinforcing existing uncertainty about the user's preferences."
+        )
+
+    #Based on the paper, LLM's learn better when they see the internal state of a probabilistic model.
+    # we can use the expected weights, which is a summary of the belief state.
+    weight_diff = posterior_weights - prior_weights #how did the weights for the features change as a result of the user's choice?
+    significant_weight_changes = np.where(np.abs(weight_diff) > weight_noise_threshold)[0] #argue only based on significant changes
+
+    if len(significant_weight_changes) > 0:
+        effects = []
+        for i in significant_weight_changes:
+            direction = "increased" if weight_diff[i] > 0 else "decreased"
+            effects.append(f"{features[i]} weight {direction}") #for example: "price weight increased"
+
+        reasoning_parts.append(
+            "This is reflected in the expected weights, where " + ", ".join(effects) + "."
+        )
+        #we must include the else logic in order to teach the model to recognize the case where there are no significant changes
+    else:
+        reasoning_parts.append(
+            "Accordingly, the expected feature weights remain largely unchanged."
+        )
+
+    return " ".join(reasoning_parts)
 
