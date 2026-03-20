@@ -37,83 +37,123 @@ def generate_random_flight_batch(n=4):
         flights.append([price, time, duration, stops])
     return flights
 
-def generate_reasoning(processed_data, choice_idx, prior_weights, posterior_weights, prior_belief, posterior_belief, features, user_profiles, belief_noise_threshold=0.005, weight_noise_threshold=0.05):
-    """
-    Generates a synthetic Chain-of-Thought reasoning string. 
-    parameters: 
-    processed_data: the normalized flight data that the user chose from, shape is [4,4] (4 flights, 4 features) 
-    choice_idx: the index of the flight that the user chose, an integer from 0 
-    prior_weights: the expected weights for each feature before the user made their choice, shape is [4] (4 features) 
-    posterior_weights: the expected weights for each feature after the user made their choice, shape is [4] (4 features) 
-    features: the list of feature names, in the same order as the weights and the processed data, shape is [4] (4 features) 
-    user_profiles: the matrix of user profiles, shape is [625, 4] (625 profiles, 4 features) 
-    noise_threshold: the threshold for determining significant weight changes, default is 0.05
-    returns: 
-    reasoning: a string that explains the user's choice from a bayesian perspective
-    """
 
+import numpy as np
+
+def generate_reasoning(raw_flight_data, processed_data, choice_idx, prior_weights, posterior_weights, features, ideal_time_mins=9*60):
+    """
+    Generates a synthetic Chain-of-Thought reasoning string focusing on trade-offs.
+    Calls the external `explain_time_penalty` helper to translate cyclical time logic.
+    """
+    chosen_flight_raw = raw_flight_data[choice_idx]
+    chosen_flight_norm = processed_data[choice_idx]
+    unselected_indices = [i for i in range(len(raw_flight_data)) if i != choice_idx]
+    
     reasoning_parts = []
+    
+    # 1. The Observation
+    reasoning_parts.append(f"The user selected Flight {choice_idx}.")
+    
+    # 2. Contrastive Trade-offs (Handling standard features first)
+    advantages = []
+    sacrifices = []
+    
+    # Locate the index for time_penalty so we can skip it in the standard loop
+    time_idx = features.index('time_penalty') if 'time_penalty' in features else 1
+    
+    for feature_idx, feature_name in enumerate(features):
+        if feature_idx == time_idx:
+            continue # Skip time penalty here; we handle it below via the helper
+            
+        chosen_val = chosen_flight_raw[feature_idx]
+        rejected_vals = [raw_flight_data[i][feature_idx] for i in unselected_indices]
+        
+        if chosen_val <= min(rejected_vals):
+            advantages.append(feature_name)
+        elif chosen_val > min(rejected_vals):
+            sacrifices.append(feature_name)
 
-    #what was the observation? what was the user's choice?
-    reasoning_parts.append(f"The user selected Flight {choice_idx} from the available options.")
+    # Format advantages grammatically
+    if advantages:
+        if len(advantages) > 2:
+            adv_str = ", ".join(advantages[:-1]) + f", and {advantages[-1]}"
+        else:
+            adv_str = " and ".join(advantages)
+        reasoning_parts.append(f"This flight offered the most competitive {adv_str} compared to the alternatives.")
+        
+    # Format sacrifices grammatically
+    if sacrifices:
+        if len(sacrifices) > 2:
+            sac_str = ", ".join(sacrifices[:-1]) + f", and {sacrifices[-1]}"
+        else:
+            sac_str = " and ".join(sacrifices)
+        reasoning_parts.append(f"However, the user accepted worse options for {sac_str} than were available on other flights.")
 
-    #how can we interpret this observation in terms of the user's preferences?
-    reasoning_parts.append(
-        "Each possible preference profile assigns a probability to this choice based on how well the flight's features align with its preferences."
-    )
-
-    #we calculate the belief shift - the change in probability for each user profile before and after observing the choice.
-    #positive value - the choice made the profile more likely, negative value - the choice made the profile less likely
-    #the belief starts with a uniform distribution
-    belief_shift = posterior_belief - prior_belief
-    weight_diff = posterior_weights - prior_weights #how did the weights for the features change as a result of the user's choice?
-    # the update can be noisy, so we focus on significant shifts. we can tune the noise threshold.
-    significant_indices = np.where(np.abs(belief_shift) > belief_noise_threshold)[0]
-    significant_weight_changes = np.where(np.abs(weight_diff) > weight_noise_threshold)[0] #argue only based on significant changes
-
-    if len(significant_indices) > 0 or len(significant_weight_changes) > 0:
+    # 3. Call the external helper function for the time penalty
+    dep_time_mins = chosen_flight_raw[time_idx]
+    time_penalty_val = chosen_flight_norm[time_idx]
+    
+    time_explanation = explain_time_penalty(dep_time_mins, ideal_time_mins, time_penalty_val)
+    reasoning_parts.append(f"Regarding schedule: {time_explanation}")
+    
+    # 4. Logical Inference
+    if advantages and sacrifices:
         reasoning_parts.append(
-            "Profiles that assigned higher likelihood to the chosen flight increased in probability, while others decreased."
+            f"Choosing this flight despite the trade-offs indicates that the user strongly prioritizes {', '.join(advantages)} over {', '.join(sacrifices)}."
         )
-
-        #what is the direction of the shift? we average the shifts of the significant profiles, by using the weights of the profiles that were the most changed by this choice
-        if len(significant_indices) > 0:
-            avg_shift = np.average(user_profiles[significant_indices], axis=0, weights=np.abs(belief_shift[significant_indices]))
-            feature_effects = [] #we use the values of avg_shift to determine how the users preference changed for each feature.
-            for i, feature in enumerate(features):
-                if abs(avg_shift[i]) > 0.1: #for significant changes
-                    direction = "prefer lower" if avg_shift[i] < 0 else "prefer higher" #lower values are represented by negative weights, higher values by positive weights, so the sign determines the preference
-                    feature_effects.append(f"{feature} ({direction} values)") #for example: "price (prefer lower values)"
-
-            if feature_effects: 
-                #we convert the list into a string that explains the change in preferences for the features, and we add it to the reasoning
-                reasoning_parts.append(
-                    "As a result, the belief shifts toward profiles that " +
-                    ", ".join(feature_effects) + "."
-                )
-       
-        if len(significant_weight_changes) > 0:
-            effects = []
-            for i in significant_weight_changes:
-                direction = "increased" if weight_diff[i] > 0 else "decreased"
-                effects.append(f"{features[i]} weight {direction}") #for example: "price weight increased"
-            reasoning_parts.append(
-                "This is reflected in the expected weights, where " + ", ".join(effects) + "."
-            )
-    #we must include the else logic in order to teach the model to recognize the case where there are no significant changes
+    
+    # 5. The Bayesian Update
+    weight_diff = posterior_weights - prior_weights
+    significant_weight_changes = np.where(np.abs(weight_diff) > 0.05)[0]
+    
+    if len(significant_weight_changes) > 0:
+        effects = []
+        for i in significant_weight_changes:
+            direction = "increased priority (lower weight)" if weight_diff[i] < 0 else "decreased priority (higher weight)"
+            effects.append(f"{features[i]} showed {direction}")
+            
+        reasoning_parts.append(
+            "Updating our belief state to reflect this observation, the expected weights shift significantly: " + ", ".join(effects) + "."
+        )
     else:
-        #we must provide an explanation also for the case where there are no significant shifts in the belief, in order to teach the model to recognize this case.
         reasoning_parts.append(
-            "Most preference profiles already assigned similar probabilities to this choice, so the observation does not strongly distinguish between them."
-        )
-        reasoning_parts.append(
-            "As a result, the posterior remains similar to the prior, reinforcing existing uncertainty about the user's preferences."
-        )
-        reasoning_parts.append(
-            "Accordingly, the expected feature weights remain largely unchanged."
+            "Because this choice aligns with existing uncertainties or was an objectively dominant flight, the expected feature weights remain largely unchanged."
         )
 
     return " ".join(reasoning_parts)
 
 
-
+def explain_time_penalty(departure_time_mins, ideal_time_mins, time_penalty):
+    """
+    Translates the continuous cyclical time penalty into a semantic 
+    explanation for the LLM's Chain-of-Thought.
+    """
+    # 1. Format the times for readability (e.g., 540 -> "09:00")
+    dep_h, dep_m = divmod(departure_time_mins, 60)
+    ideal_h, ideal_m = divmod(ideal_time_mins, 60)
+    
+    dep_str = f"{int(dep_h):02d}:{int(dep_m):02d}"
+    ideal_str = f"{int(ideal_h):02d}:{int(ideal_m):02d}"
+    
+    # 2. Calculate the straightforward "hours away" (accounting for midnight wrap-around)
+    raw_diff = abs(departure_time_mins - ideal_time_mins)
+    shortest_diff_mins = min(raw_diff, (24 * 60) - raw_diff)
+    hours_away = round(shortest_diff_mins / 60.0, 1)
+    
+    # 3. Categorize the mathematical penalty based on the cyclical distance
+    # The penalty is sin(delta/2). 
+    # < 0.15 is roughly within 1 hour. < 0.35 is roughly within 3 hours.
+    if time_penalty < 0.15:
+        severity = "a minimal"
+    elif time_penalty < 0.35:
+        severity = "a moderate"
+    elif time_penalty < 0.70:
+        severity = "a significant"
+    else:
+        severity = "a severe"
+        
+    # 4. Construct the semantic explanation
+    if hours_away == 0:
+        return f"Flight departs exactly at the ideal {ideal_str}, incurring no time penalty (0.00)."
+    else:
+        return f"Flight departs at {dep_str}. Being {hours_away} hours away from the ideal {ideal_str}, it incurs {severity} time penalty ({time_penalty:.2f})."
