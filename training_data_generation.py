@@ -14,7 +14,7 @@ def format_llm_prompt(flights, chosen_idx, prior_weights, features):
     """
     prompt = """You are a travel assistant that helps a user choose a flight. 
                 Please analyze the user's flight selection and use it to update your understanding of the user's preferences.
-                Focus on the change in the user's preferences based on the choice they made, and explain the trade-offs that the user made in their choice./n/n""" 
+                Focus on the change in the user's preferences based on the choice they made, and explain the trade-offs that the user made in their choice.\n\n""" 
     prompt += f"Current Expected Feature Weights (Prior):\n"
     for feat, weight in zip(features, prior_weights):
         prompt += f"- {feat}: {weight:.2f}\n"

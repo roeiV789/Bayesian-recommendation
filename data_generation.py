@@ -24,7 +24,7 @@ def generate_random_flight_batch(n=4):
         raw_price = np.random.lognormal(mean = mu, sigma = sigma)
         if not (raw_price>=200 and raw_price<1200):
                 continue #throw the value away and draw a new one
-        price = raw_price
+        price = round(raw_price,2)
         #time is an integer, we use randint
         time = random.randint(300, 1300) # 5:00 AM to 9:00 PM
         #we model duration using a normal distribution, and throw away values outside of the range
@@ -33,7 +33,7 @@ def generate_random_flight_batch(n=4):
             continue #throw the value away and draw a new one
         duration = raw_duration
         #it is quite uncommon to have more than 2 stops
-        stops = np.random.choice([0, 1, 2], p = [0.4, 0.5, 0.1])
+        stops = int(np.random.choice([0, 1, 2], p = [0.4, 0.5, 0.1]))
         flights.append([price, time, duration, stops])
     return flights
 
@@ -99,7 +99,7 @@ def generate_reasoning(raw_flight_data, processed_data, choice_idx, prior_weight
     # 4. Logical Inference
     if advantages and sacrifices:
         reasoning_parts.append(
-            f"Choosing this flight despite the trade-offs indicates that the user strongly prioritizes {', '.join(advantages)} over {', '.join(sacrifices)}."
+            f"Choosing this flight despite the trade-offs indicates that the user strongly prioritizes {adv_str} over {sac_str}."
         )
     
     # 5. The Bayesian Update
