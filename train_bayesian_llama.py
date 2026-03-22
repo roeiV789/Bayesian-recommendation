@@ -3,8 +3,8 @@ import torch
 from datasets import Dataset, DatasetDict
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import get_chat_template
-from trl import SFTTrainer
-from transformers import TrainingArguments, DataCollatorForSeq2Seq
+from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
+from transformers import TrainingArguments
 
 # ==========================================
 # 1. CONFIGURATION
@@ -108,6 +108,16 @@ dataset = dataset.map(format_chat, batched=True)
 # ==========================================
 # 5. TRAINING LOOP SETUP
 # ==========================================
+
+# Llama-3's specific hidden tokens that introduce the assistant's turn
+response_template = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+
+# Initialize the highly-focused collator
+collator = DataCollatorForCompletionOnlyLM(
+    response_template=response_template, 
+    tokenizer=tokenizer
+)
+
 trainer = SFTTrainer(
     model = model,
     tokenizer = tokenizer,
@@ -116,8 +126,7 @@ trainer = SFTTrainer(
     dataset_text_field = "text",
     max_seq_length = MAX_SEQ_LENGTH,
     dataset_num_proc = 2,
-    # DataCollator pads the sequences dynamically to the longest batch sequence
-    data_collator = DataCollatorForSeq2Seq(tokenizer = tokenizer),
+    data_collator = collator,
     args = TrainingArguments(
         per_device_train_batch_size = 2, # Adjust based on VRAM (2-4 is usually safe for 24GB VRAM)
         gradient_accumulation_steps = 4, # Simulates a larger batch size
