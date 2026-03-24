@@ -120,7 +120,6 @@ collator = DataCollatorForCompletionOnlyLM(
 
 trainer = SFTTrainer(
     model = model,
-    tokenizer = tokenizer,
     train_dataset = dataset["train"],
     eval_dataset = dataset["validation"],
     dataset_text_field = "text",
@@ -156,8 +155,8 @@ trainer_stats = trainer.train()
 # 7. SAVE THE MODEL
 # ==========================================
 print(f"Training complete. Saving LoRA adapters to {OUTPUT_DIR}")
-# This saves JUST the small LoRA adapters, not the whole 8B parameter model
+# saves only the LoRA adapters
 model.save_pretrained(OUTPUT_DIR) 
 tokenizer.save_pretrained(OUTPUT_DIR)
 
-print("Done! You can now load this adapter on top of Llama-3 for inference.")
+print("saved!")
