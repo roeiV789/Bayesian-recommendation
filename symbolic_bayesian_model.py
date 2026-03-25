@@ -87,10 +87,10 @@ class BayesianAssistant:
         return np.average(self.user_profiles, axis=0, weights=self.belief_state)
     
     def reset_belief_state(self):
-        """Resets the engine for a new simulated traveler."""
+        #reset the engine for a new user by copying the prior back into the belief state
         self.belief_state = self.prior.copy()
     def preprocess_flights(self, raw_flight_data):
-        """Converts raw departure time into the cyclical time penalty before normalizing."""
+        #we preprocess the flight data by calculating the time_penalty and normalizing the features using min-max scaling relative to the current options, so that the model can learn more generalizable patterns rather than memorizing specific values   
         processed_data = []
         for flight in raw_flight_data:
             price, dep_time, duration, stops = flight

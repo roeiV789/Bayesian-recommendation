@@ -3,13 +3,13 @@ import torch
 from datasets import Dataset, DatasetDict
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import get_chat_template
-from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
+from trl import SFTTrainer
 from transformers import TrainingArguments
 
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-DATA_FILE = "bayesian_flight_data.jsonl" #training data
+DATA_FILE = "/content/drive/MyDrive/bayesian project/bayesian_flight_data.jsonl"
 MAX_SEQ_LENGTH = 2048 #max token length to save VRAM.
 MODEL_NAME = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit" # we use 4-bit quanticized LLama-3.1. research shows that a 4-bit base model with 16-bit trainable adapters(from LoRA) can achieve 99% of the performance with 16-bit.
 OUTPUT_DIR = "llama_lora"
@@ -27,7 +27,7 @@ with open(DATA_FILE, "r") as f:
 INTERACTIONS_PER_USER = 4
 users = [raw_lines[i:i + INTERACTIONS_PER_USER] for i in range(0, len(raw_lines), INTERACTIONS_PER_USER)] #group every 4 interactions from a user
 
-num_users = len(users) 
+num_users = len(users)
 train_idx = int(0.90 * num_users)
 val_idx = int(0.95 * num_users)
 
@@ -49,7 +49,7 @@ print(f"The dataset split is as follows: {len(train_data)} Train | {len(val_data
 dataset = DatasetDict({
     "train": Dataset.from_list(train_data),
     "validation": Dataset.from_list(val_data),
-    "test": Dataset.from_list(test_data) 
+    "test": Dataset.from_list(test_data)
 })
 
 # ==========================================
@@ -78,8 +78,8 @@ model = FastLanguageModel.get_peft_model(
     model,
     r = 16, # LoRA rank (16 is a solid default for reasoning tasks)
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-    lora_alpha = 16, 
-    lora_dropout = 0, #because we are using unsloth 
+    lora_alpha = 16,
+    lora_dropout = 0, #because we are using unsloth
     bias = "none", #no bias used with LoRA
     use_gradient_checkpointing = "unsloth", # save VRAM
     random_state = 3407, #Torch.manual_seed(3407) is all you need
@@ -93,7 +93,7 @@ model = FastLanguageModel.get_peft_model(
 
 tokenizer = get_chat_template(
     tokenizer,
-    chat_template = "llama-3", 
+    chat_template = "llama-3",
     mapping = {"role": "role", "content": "content", "user": "user", "assistant": "assistant"}
 )
 
@@ -109,42 +109,38 @@ dataset = dataset.map(format_chat, batched=True)
 # 5. TRAINING LOOP SETUP
 # ==========================================
 
-# Llama-3's specific hidden tokens that introduce the assistant's turn
-response_template = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+from trl import SFTConfig # Import the config class directly
 
-# Initialize the highly-focused collator
-collator = DataCollatorForCompletionOnlyLM(
-    response_template=response_template, 
-    tokenizer=tokenizer
+# Define the config separately to avoid the 'push_to_hub_token' error
+training_args = SFTConfig(
+    output_dir = "outputs",
+    per_device_train_batch_size = 8,
+    gradient_accumulation_steps = 1,
+    dataset_num_proc = 4,
+    warmup_steps = 50,
+    max_steps = 500,
+    learning_rate = 2e-4,
+    fp16 = not torch.cuda.is_bf16_supported(),
+    bf16 = torch.cuda.is_bf16_supported(),
+    logging_steps = 10,
+    eval_strategy = "steps",
+    eval_steps = 50,
+    optim = "adamw_8bit",
+    weight_decay = 0.01,
+    lr_scheduler_type = "linear",
+    seed = 3407,
+    dataset_text_field = "text", # Move this inside SFTConfig
+    max_seq_length = MAX_SEQ_LENGTH, # Move this inside SFTConfig
+    packing = False, # Move this inside SFTConfig
 )
 
 trainer = SFTTrainer(
     model = model,
+    tokenizer = tokenizer,
     train_dataset = dataset["train"],
     eval_dataset = dataset["validation"],
-    dataset_text_field = "text",
-    max_seq_length = MAX_SEQ_LENGTH,
-    dataset_num_proc = 2,
-    data_collator = collator,
-    args = TrainingArguments(
-        per_device_train_batch_size = 2, # Adjust based on VRAM (2-4 is usually safe for 24GB VRAM)
-        gradient_accumulation_steps = 4, # Simulates a larger batch size
-        warmup_steps = 50,
-        max_steps = 500, # Start with 500 steps to see how it learns. For a full run, use `num_train_epochs=1` instead.
-        learning_rate = 2e-4,
-        fp16 = not torch.cuda.is_bf16_supported(),
-        bf16 = torch.cuda.is_bf16_supported(),
-        logging_steps = 10,
-        eval_steps = 50, # Evaluate on the validation set every 50 steps
-        evaluation_strategy = "steps",
-        optim = "adamw_8bit", # 8-bit optimizer saves more memory
-        weight_decay = 0.01,
-        lr_scheduler_type = "linear",
-        seed = 3407,
-        output_dir = "outputs",
-    ),
+    args = training_args, # Pass the config object here
 )
-
 # ==========================================
 # 6. EXECUTE TRAINING
 # ==========================================
@@ -156,7 +152,7 @@ trainer_stats = trainer.train()
 # ==========================================
 print(f"Training complete. Saving LoRA adapters to {OUTPUT_DIR}")
 # saves only the LoRA adapters
-model.save_pretrained(OUTPUT_DIR) 
+model.save_pretrained(OUTPUT_DIR)
 tokenizer.save_pretrained(OUTPUT_DIR)
 
 print("saved!")
