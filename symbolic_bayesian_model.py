@@ -45,6 +45,10 @@ class BayesianAssistant:
         min_values = np.min(data, axis=0)
         max_values = np.max(data, axis=0)
         col_range = max_values - min_values
+        #to avoid cases where we scale flights too agressively over small differences, we add soft min-max scaling
+        #60 minutes time penalty is about 0.13 in cylical distance
+        min_spread = np.array([75.0,0.13, 60.0, 1.0])
+        col_range = np.maximum(col_range, min_spread)
         #avoid division by zero by setting the range to 1 for features where all values are the same
         col_range[col_range == 0] = 1.0
         return (data-min_values) / col_range
