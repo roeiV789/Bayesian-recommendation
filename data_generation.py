@@ -37,123 +37,138 @@ def generate_random_flight_batch(n=4):
         flights.append([price, time, duration, stops])
     return flights
 
-
-import numpy as np
-
-def generate_reasoning(raw_flight_data, processed_data, choice_idx, prior_weights, posterior_weights, features, ideal_time_mins=9*60):
+def evaluate_hypotheses(flights, chosen_index, is_low_info, ideal_time_mins=9*60):
     """
-    Generates a synthetic Chain-of-Thought reasoning string focusing on trade-offs.
-    Calls the external `explain_time_penalty` helper to translate cyclical time logic.
+    Evaluates each hypothesis programmatically. Handles weak/uninformative cases.
     """
-    chosen_flight_raw = raw_flight_data[choice_idx]
-    chosen_flight_norm = processed_data[choice_idx]
-    unselected_indices = [i for i in range(len(raw_flight_data)) if i != choice_idx]
+    chosen = flights[chosen_index] #selects the flight the user chose.
+    evaluations = {} #dictionary to store the evaluation of each hypothesis.
+
+    #build lists for each of the features across all flights
+    prices = [f[0] for f in flights]
+    durations = [f[2] for f in flights]
+    stops = [f[3] for f in flights]
     
-    reasoning_parts = []
+    #calculate the distance of each flight's depparture time from the ideal time.
+    time_distances = [min(abs(f[1] - ideal_time_mins), (24*60) - abs(f[1] - ideal_time_mins)) for f in flights] 
     
-    # 1. The Observation
-    reasoning_parts.append(f"The user selected Flight {choice_idx}.")
+    evaluate_prices(evaluations, prices, chosen, is_low_info, chosen_index)
+    evaluate_durations(evaluations, durations, chosen, is_low_info, chosen_index)
+    evaluate_stops(evaluations, stops, chosen, is_low_info, chosen_index)
+    evaluate_schedule(evaluations, time_distances, chosen_index, is_low_info, ideal_time_mins)
+
+    return evaluations
+
+def evaluate_prices(evaluations, prices, chosen, low_info_flag, chosen_index):
+    if low_info_flag and (max(prices) - min(prices)) < 25: #if the price range is less than $25, we consider it a low information scenario for price preference.
+        evaluations["Prefers low cost flights"] = ("Not enough information to determine", "price differences are minimal across the options.")
+    elif chosen[0] == min(prices):
+        evaluations["Prefers low cost flights"] = ("Supported", f"Flight {chosen_index} is the cheapest option.")
+    elif chosen[0] == max(prices):
+        evaluations["Prefers low cost flights"] = ("Contradicted", f"Flight {chosen_index} is the most expensive option.")
+    else:
+        evaluations["Prefers low cost flights"] = ("evidence doesn't support this hypothesis", "Lower cost options were available.")
+
+def evaluate_durations(evaluations, durations, chosen, low_info_flag, chosen_index):
+    if low_info_flag and (max(durations) - min(durations)) < 40: #if the duration range is less than 40 minutes, we consider it a low information scenario for duration preference.
+        evaluations["Prefers shorter duration"] = ("inconclusive", "Differences in duration are negligible.")
+    elif chosen[2] == min(durations):
+        evaluations["Prefers shorter duration"] = ("Supported", f"Flight {chosen_index} takes the least amount of time.")
+    elif chosen[2] == max(durations):
+        evaluations["Prefers shorter duration"] = ("Contradicted", f"Flight {chosen_index} is the longest option.")
+    else:
+        evaluations["Prefers shorter duration"] = ("Not supported", "Shorter flights were available in the option set.")
+
+def evaluate_stops(evaluations, stops, chosen, low_info_flag, chosen_index):
+    if low_info_flag and max(stops) == min(stops):
+        evaluations["Prefers fewer stops"] = ("Not enough information to determine", "All flights have the same number of stops.")
+    elif chosen[3] == min(stops):
+        evaluations["Prefers fewer stops"] = ("Supported", f"Flight {chosen_index} has the minimum number of stops among the options.")
+    else:
+        evaluations["Prefers fewer stops"] = ("Not supported", "Flights with fewer stops were available.")
+
+def evaluate_schedule(evaluations, time_distances, chosen_index, low_info_flag, ideal_time_mins=9*60):
+    ideal_str = f"{ideal_time_mins//60:02d}:{ideal_time_mins%60:02d}"
+    if low_info_flag and (max(time_distances) - min(time_distances)) < 60: #if the time penalty range is less than 1 hour, we consider it a low information scenario for schedule preference.
+        evaluations[f"Prefers departure close to {ideal_str}"] = ("inconclusive", "departure times are in the same range")
+    elif time_distances[chosen_index] == min(time_distances):
+        evaluations[f"Prefers departure close to {ideal_str}"] = ("Supported", f"Flight {chosen_index} departs closest to the ideal time of {ideal_str}.")
+    else:
+        evaluations[f"Prefers departure close to {ideal_str}"] = ("Not supported", f"Other options departed closer to the ideal time of {ideal_str}.")
+
+def generate_hypothesis_reasoning(flights, chosen_index, prior_probs, new_flights, new_flight_expected_probs, ideal_time_mins=9*60):
+    """
+    Generates the target chain-of-thought based on Bayesian hypothesis testing 
+    and outputs a final ranking for a downstream task.
+    """
+    # Detect "No-Update" case: Likelihood flatness method (max-min < epsilon)
+    is_low_info = (np.max(prior_probs) - np.min(prior_probs)) < 0.15 #prior_probs is the flight distribution
     
-    # 2. Contrastive Trade-offs (Handling standard features first)
-    advantages = []
-    sacrifices = []
+    # Step 2: Generate evaluations
+    evaluations = evaluate_hypotheses(flights, chosen_index, is_low_info, ideal_time_mins)
     
-    # Locate the index for time_penalty so we can skip it in the standard loop
-    time_idx = features.index('time_penalty') if 'time_penalty' in features else 1
-    
-    for feature_idx, feature_name in enumerate(features):
-        if feature_idx == time_idx:
-            continue # Skip time penalty here; we handle it below via the helper
-            
-        chosen_val = chosen_flight_raw[feature_idx]
-        rejected_vals = [raw_flight_data[i][feature_idx] for i in unselected_indices]
+    reasoning = "Step 2: Evaluate explanations\n\n"
+    for hyp, (status, explanation) in evaluations.items():
+        reasoning += f"- {hyp}: {status}. {explanation}\n"
         
-        if chosen_val <= min(rejected_vals):
-            advantages.append(feature_name)
-        elif chosen_val > min(rejected_vals):
-            sacrifices.append(feature_name)
+    # Step 3: Conclusion
+    reasoning += "\nStep 3: Conclusion\n\n"
+    
+    # extract the three status categories for each hypothesis and format them
+    supported = [clean_hyp(k, ideal_time_mins) for k, (status, _) in evaluations.items() if status == "Supported"]
+    contradicted = [clean_hyp(k, ideal_time_mins) for k, (status, _) in evaluations.items() if status == "Contradicted"]
+    not_supported = [clean_hyp(k, ideal_time_mins) for k, (status, _) in evaluations.items() if status == "Not supported"]
+    inconclusive = [clean_hyp(k, ideal_time_mins) for k, (status, _) in evaluations.items() if status in ["inconclusive", "Not enough information to determine"]]
 
-    # Format advantages grammatically
-    if advantages:
-        if len(advantages) > 2:
-            adv_str = ", ".join(advantages[:-1]) + f", and {advantages[-1]}"
+    # Scenario A: ALL hypotheses are inconclusive (Total Low Information)
+    if len(inconclusive) == len(evaluations):
+        reasoning += f"The available options are similar or the trade-offs are balanced, providing inconclusive evidence regarding {', '.join(inconclusive)}. Therefore, no significant update to the belief about the user's preferences can be made.\n"
+
+
+    # Scenario B: Mixed Information
+    else:
+        
+        if supported:
+            reasoning += f"The user's choice strongly indicates a preference for {', '.join(supported)}"
         else:
-            adv_str = " and ".join(advantages)
-        reasoning_parts.append(f"This flight offered the most competitive {adv_str} compared to the alternatives.")
+            reasoning += "The user's choice reflects a complex trade-off without a single strongly dominant preference"
+
+        other = []
+        if not_supported:
+            other.append(f"showing no specific priority for {', '.join(not_supported)}")
+        if contradicted:
+            other.append(f"does not prioritize {', '.join(contradicted)} at all")
+        if inconclusive:
+            other.append(f"providing inconclusive evidence regarding the user's preference for {', '.join(inconclusive)}")
         
-    # Format sacrifices grammatically
-    if sacrifices:
-        if len(sacrifices) > 2:
-            sac_str = ", ".join(sacrifices[:-1]) + f", and {sacrifices[-1]}"
+        if other:
+            if len(other) == 1:
+                reasoning += f", while {other[0]}.\n"
+            elif len(other) == 2:
+                reasoning += f", while {other[0]} and {other[1]}.\n"
+            else:
+                reasoning += f", while {', '.join(other[:-1])}, and {other[-1]}.\n"
         else:
-            sac_str = " and ".join(sacrifices)
-        reasoning_parts.append(f"However, the user accepted worse options for {sac_str} than were available on other flights.")
-
-    # 3. Call the external helper function for the time penalty
-    dep_time_mins = chosen_flight_raw[time_idx]
-    time_penalty_val = chosen_flight_norm[time_idx]
-    
-    time_explanation = explain_time_penalty(dep_time_mins, ideal_time_mins, time_penalty_val)
-    reasoning_parts.append(f"Regarding schedule: {time_explanation}")
-    
-    # 4. Logical Inference
-    if advantages and sacrifices:
-        reasoning_parts.append(
-            f"Choosing this flight despite the trade-offs indicates that the user strongly prioritizes {adv_str} over {sac_str}."
-        )
-    
-    # 5. The Bayesian Update
-    weight_diff = posterior_weights - prior_weights
-    significant_weight_changes = np.where(np.abs(weight_diff) > 0.05)[0]
-    
-    if len(significant_weight_changes) > 0:
-        effects = []
-        for i in significant_weight_changes:
-            direction = "increased priority (lower weight)" if weight_diff[i] < 0 else "decreased priority (higher weight)"
-            effects.append(f"{features[i]} showed {direction}")
-            
-        reasoning_parts.append(
-            "Updating our belief state to reflect this observation, the expected weights shift significantly: " + ", ".join(effects) + "."
-        )
-    else:
-        reasoning_parts.append(
-            "Because this choice aligns with existing uncertainties or was an objectively dominant flight, the expected feature weights remain largely unchanged."
-        )
-
-    return " ".join(reasoning_parts)
-
-
-def explain_time_penalty(departure_time_mins, ideal_time_mins, time_penalty):
-    """
-    Translates the continuous cyclical time penalty into a semantic 
-    explanation for the LLM's Chain-of-Thought.
-    """
-    # 1. Format the times for readability (e.g., 540 -> "09:00")
-    dep_h, dep_m = divmod(departure_time_mins, 60)
-    ideal_h, ideal_m = divmod(ideal_time_mins, 60)
-    
-    dep_str = f"{int(dep_h):02d}:{int(dep_m):02d}"
-    ideal_str = f"{int(ideal_h):02d}:{int(ideal_m):02d}"
-    
-    # 2. Calculate the straightforward "hours away" (accounting for midnight wrap-around)
-    raw_diff = abs(departure_time_mins - ideal_time_mins)
-    shortest_diff_mins = min(raw_diff, (24 * 60) - raw_diff)
-    hours_away = round(shortest_diff_mins / 60.0, 1)
-    
-    # 3. Categorize the mathematical penalty based on the cyclical distance
-    # The penalty is sin(delta/2). 
-    # < 0.15 is roughly within 1 hour. < 0.35 is roughly within 3 hours.
-    if time_penalty < 0.15:
-        severity = "a minimal"
-    elif time_penalty < 0.35:
-        severity = "a moderate"
-    elif time_penalty < 0.70:
-        severity = "a significant"
-    else:
-        severity = "a severe"
+            reasoning += ".\n"
         
-    # 4. Construct the semantic explanation
-    if hours_away == 0:
-        return f"Flight departs exactly at the ideal {ideal_str}, incurring no time penalty (0.00)."
-    else:
-        return f"Flight departs at {dep_str}. Being {hours_away} hours away from the ideal {ideal_str}, it incurs {severity} time penalty ({time_penalty:.2f})."
+    # Ranking new flights based on the updated belief state.
+    reasoning += "\nRanking new flights:\n\n"
+    
+    if is_low_info:
+        reasoning += "Since preferences are unclear, prioritizing flights with balanced trade-offs based on general population priors.\n\n"
+    
+    ranking_indices = np.argsort(new_flight_expected_probs)[::-1] #get a list of the indices of the flights sorted by their expected probabilities.
+    labels = ['A', 'B', 'C', 'D']
+    
+    for idx in ranking_indices:
+        lbl = labels[idx]
+        reasoning += f"- Flight {lbl}: Expected selection probability {new_flight_expected_probs[idx]:.2f}.\n"
+
+    reasoning += "\nFinal Ranking:\n"
+    for i, idx in enumerate(ranking_indices):
+         reasoning += f"{i+1}. Flight {labels[idx]}\n"
+
+    return reasoning
+
+def clean_hyp(str_to_clean, ideal_time_mins):
+            return str_to_clean.replace("Prefers ", "").replace(f" departure close to {ideal_time_mins//60:02d}:{ideal_time_mins%60:02d}", " schedule")
